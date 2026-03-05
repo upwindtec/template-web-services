@@ -1,0 +1,39 @@
+﻿@expo_sample_web_services_HostAddress = http://localhost:7005
+
+GET {{expo_sample_web_services_HostAddress}}/items
+
+###
+
+@collection=string
+POST {{expo_sample_web_services_HostAddress}}/items
+Content-Type: application/json
+
+{
+  "value":"Task 1",
+  "done": false
+}
+
+###
+
+@Id=string
+DELETE {{expo_sample_web_services_HostAddress}}/items/c3878091-36f5-4c1a-a2ab-6ee16a0636dc
+
+###
+
+PATCH {{expo_sample_web_services_HostAddress}}/items/3282380a-6c06-4740-b48c-b07ccfc9c3b3
+Content-Type: application/json
+
+{
+  "done": true
+}
+
+###
+
+PUT {{expo_sample_web_services_HostAddress}}/items/3282380a-6c06-4740-b48c-b07ccfc9c3b3
+Content-Type: application/json
+
+{
+  "value":"Task 2",
+  "done": false
+}
+###
