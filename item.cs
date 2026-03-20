@@ -5,7 +5,7 @@
 //
 namespace expo_sample_web_services;
 
-public partial class item : UpwindtecCloudStorageUtils.IBaseEntity
+public partial class Item : UpwindtecCloudStorageUtils.IBaseEntity
 {
     public string Id { get; set; } = null!;
 

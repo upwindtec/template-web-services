@@ -6,8 +6,10 @@
 using expo_sample_web_services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
+using System.Text.Json;
 using UpwindtecCloudStorageUtils;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -16,12 +18,12 @@ builder.Services.AddHttpLogging(o => { });
 
 builder.WebHost.UseKestrel(serverOptions =>
 {
-    serverOptions.Listen(IPAddress.Any, 7005);
+    serverOptions.Listen(IPAddress.Any, 8080);
 
     // HTTPS will fail in development environment, only HTTP calls will work. In production, the certificate will be provided by the hosting environment and HTTPS will work.
     try
     {
-        serverOptions.Listen(IPAddress.Any, 7006,
+        serverOptions.Listen(IPAddress.Any, 8089,
             listenOptions =>
             {
                 listenOptions.UseHttps(new X509Certificate2(@"cert/santaluzia1.pfx"));
@@ -43,7 +45,7 @@ if (connectionString == null)
 }
 
 // use PostgreSQL as database provider
-builder.Services.AddDbContext<exposampleContext>(opt =>
+builder.Services.AddDbContext<ExpoSampleContext>(opt =>
         opt.UseNpgsql(connectionString)
         );
 
@@ -52,6 +54,19 @@ builder.Services.Configure<Microsoft.AspNetCore.Http.Json.JsonOptions>(options =
 {
     options.SerializerOptions.PropertyNamingPolicy = null;
 });
+
+// Create another DataSource to receive notifications from the Database
+builder.Services.AddSingleton<NpgsqlDataSource>((sp) =>
+{
+    var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
+    return dataSourceBuilder.Build();
+});
+
+// Register the Database Notification Handler
+builder.Services.AddSingleton<PostgresNotificationHandler>(ExpoSampleContext.notificationHandler);
+
+// Add the Background Service processing the Notifications
+builder.Services.AddHostedService<PostgresNotificationService>();
 
 var app = builder.Build();
 app.UseHttpLogging();
@@ -62,6 +77,10 @@ app.MapPatch("/{collection}/{Id}", UpdateRecord);
 app.MapPut("/{collection}/{Id}", UpdateRecord);
 app.MapDelete("/{collection}/{Id}", DeleteRecord);
 
+// Custom endpoint to monitor the completion states of items using Postgres NOTIFY / LISTEN
+app.MapGet("/done", GetItemCompletionState);
+
+
 app.Run();
 
 /// <summary>
@@ -71,11 +90,11 @@ app.Run();
 async Task<IResult> GetRecords(HttpRequest request,
                             [FromRoute] string collection, 
                             [FromRoute] string? Id,
-                            exposampleContext db)
+                            ExpoSampleContext db)
 {
     try
     {
-        if (!exposampleContext.entityTypes.TryGetValue(collection, out Type? entityType))
+        if (!ExpoSampleContext.entityTypes.TryGetValue(collection, out Type? entityType))
         {
             return TypedResults.NotFound();
         }
@@ -100,11 +119,11 @@ async Task<IResult> GetRecords(HttpRequest request,
 async Task<IResult> AddRecord(HttpRequest request,
                                 [FromRoute] string collection,
                                 Dictionary<string, System.Text.Json.JsonElement>? data,
-                                exposampleContext db)
+                                ExpoSampleContext db)
 {
     try
     {
-        if (!exposampleContext.entityTypes.TryGetValue(collection, out Type? entityType))
+        if (!ExpoSampleContext.entityTypes.TryGetValue(collection, out Type? entityType))
         {
             return TypedResults.NotFound();
         }
@@ -129,11 +148,11 @@ async Task<IResult> UpdateRecord(HttpRequest request,
                                 [FromRoute] string collection,
                                 [FromRoute] string Id,
                                 Dictionary<string, System.Text.Json.JsonElement>? data,
-                                exposampleContext db)
+                                ExpoSampleContext db)
 {
     try
     {
-        if (!exposampleContext.entityTypes.TryGetValue(collection, out Type? entityType))
+        if (!ExpoSampleContext.entityTypes.TryGetValue(collection, out Type? entityType))
         {
             return TypedResults.NotFound();
         }
@@ -157,11 +176,11 @@ async Task<IResult> DeleteRecord(HttpRequest request,
                                 [FromRoute] string collection,
                                 [FromRoute] string Id,
                                 bool? DeleteRelatedItems,
-                                exposampleContext db)
+                                ExpoSampleContext db)
 {
     try
     {
-        if (!exposampleContext.entityTypes.TryGetValue(collection, out Type? entityType))
+        if (!ExpoSampleContext.entityTypes.TryGetValue(collection, out Type? entityType))
         {
             return TypedResults.NotFound();
         }
@@ -178,3 +197,49 @@ async Task<IResult> DeleteRecord(HttpRequest request,
     }
 }
 
+/// <summary>
+/// Retrieves the completion state of an Item using SSE.
+/// </summary>
+/// <param name="Accept">The Accept header value.</param>
+/// <param name="request">The HTTP request.</param>
+/// <param name="response">The HTTP response.</param>
+/// <returns>Streams or returns the Item state.</returns>
+static async Task<IResult> GetItemCompletionState([FromHeader] string? Accept,
+                    HttpContext context,
+                    HttpResponse response
+                    )
+{
+    if (Accept is not null && Accept == "text/event-stream")
+    {
+        //
+        // case of SSE streaming
+        //
+        PostgresNotificationListener listener = new PostgresNotificationListener();
+        ExpoSampleContext.notificationHandler.AddListener(listener);
+
+        response.ContentType = "text/event-stream";
+
+        // This call has the effect of sending the response without chunking.
+        // This is to be compatible with the Firebase client libraries
+        response.Headers.TransferEncoding = "";
+
+        // loop until the request is cancelled by the client closing the connection or by a timeout.
+        while (context.RequestAborted.IsCancellationRequested == false)
+        {
+            SSEResponse resp = new SSEResponse { path = "/", data = (listener.eventPayload) };
+            // return the initial state
+            var json = JsonSerializer.Serialize(resp);
+            await response.WriteAsync($"event: put\ndata: {json}\n\n");
+            await response.Body.FlushAsync();
+
+            // monitor state changes
+            listener.ewh.WaitOne();
+        }
+        ExpoSampleContext.notificationHandler.RemoveListener(listener);
+        return TypedResults.Ok();
+    }
+    else
+    {
+        return TypedResults.InternalServerError();
+    }
+}

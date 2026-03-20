@@ -7,18 +7,20 @@ using Microsoft.EntityFrameworkCore;
 
 namespace expo_sample_web_services;
 
-public partial class exposampleContext : DbContext
+public partial class ExpoSampleContext : DbContext
 {
-    public exposampleContext(DbContextOptions<exposampleContext> options)
+    public ExpoSampleContext(DbContextOptions<ExpoSampleContext> options)
         : base(options)
     {
     }
 
-    public virtual DbSet<item> items { get; set; }
+    public virtual DbSet<Item> items { get; set; }
+
+    public static PostgresNotificationHandler notificationHandler = new PostgresNotificationHandler();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<item>(entity =>
+        modelBuilder.Entity<Item>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("items_pkey");
 
@@ -32,6 +34,6 @@ public partial class exposampleContext : DbContext
 
     public static Dictionary<string, Type> entityTypes = new()
     {
-        { "items", typeof(item) }
+        { "items", typeof(Item) }
     };
 }
